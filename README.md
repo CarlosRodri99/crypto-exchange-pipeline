@@ -358,7 +358,7 @@ docker exec namenode hdfs dfs -get /crypto/processed ./backup/
 
 ## 👥 Autor
 
-[Carlos Rodriguez] - Proyecto Final Big Data
+Carlos Rodriguez Mozno - Proyecto Final Big Data
 
 ## 📄 Licencia
 
