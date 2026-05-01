@@ -1,0 +1,41 @@
+# Crear archivo .gitignore para no subir archivos innecesarios
+cat > .gitignore << 'EOF'
+# Carpetas de datos y logs
+capturas/
+*.log
+logs/
+
+# Archivos de entorno
+.env
+*.env
+
+# Archivos temporales
+*.tmp
+*.swp
+*~
+
+# Docker volumes
+volumes/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+venv/
+ENV/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.sublime-*
+EOF

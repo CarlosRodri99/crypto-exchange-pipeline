@@ -1,0 +1,309 @@
+version: '3.8'
+
+services:
+  # ============================================
+  # ZOOKEEPER - Coordinación de Kafka
+  # ============================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - crypto-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ============================================
+  # KAFKA - Bus de eventos
+  # ============================================
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    networks:
+      - crypto-network
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 40s
+
+  # ============================================
+  # HDFS - NameNode
+  # ============================================
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+    environment:
+      - CLUSTER_NAME=crypto-cluster
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - CORE_CONF_hadoop_http_staticuser_user=root
+      - HDFS_CONF_dfs_replication=1
+      - HDFS_CONF_dfs_namenode_datanode_registration_ip___hostname___check=false
+      - HDFS_CONF_dfs_permissions_enabled=false
+      - HDFS_CONF_dfs_webhdfs_enabled=true
+    volumes:
+      - namenode_data:/hadoop/dfs/name
+      - ./scripts:/scripts
+    networks:
+      - crypto-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9870"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # ============================================
+  # HDFS - DataNode
+  # ============================================
+  datanode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode
+    depends_on:
+      namenode:
+        condition: service_healthy
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+      - CORE_CONF_hadoop_http_staticuser_user=root
+      - HDFS_CONF_dfs_replication=1
+      - HDFS_CONF_dfs_datanode_data_dir=file:///hadoop/dfs/data
+    volumes:
+      - datanode_data:/hadoop/dfs/data
+    networks:
+      - crypto-network
+    command: ["hdfs", "datanode"]
+
+  # ============================================
+  # HDFS Init - Inicialización y Safe Mode
+  # ============================================
+  hdfs-init:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: hdfs-init
+    depends_on:
+      namenode:
+        condition: service_healthy
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    networks:
+      - crypto-network
+    volumes:
+      - ./scripts:/scripts
+    entrypoint: ["/bin/bash", "/scripts/init-hdfs.sh"]
+
+  # ============================================
+  # PRODUCTORES
+  # ============================================
+  binance-producer:
+    build:
+      context: ./producers
+      dockerfile: Dockerfile
+    container_name: binance-producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC=crypto-ticks
+      - PAIRS=BTCUSDT,ETHUSDT
+    networks:
+      - crypto-network
+    volumes:
+      - ./producers:/app
+    command: python binance_producer.py
+    restart: unless-stopped
+
+  coingecko-producer:
+    build:
+      context: ./producers
+      dockerfile: Dockerfile
+    container_name: coingecko-producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC=market-data
+      - POLL_INTERVAL=60
+    networks:
+      - crypto-network
+    volumes:
+      - ./producers:/app
+    command: python coingecko_producer.py
+    restart: unless-stopped
+
+  fear-greed-producer:
+    build:
+      context: ./producers
+      dockerfile: Dockerfile
+    container_name: fear-greed-producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC=sentiment-index
+      - POLL_INTERVAL=3600
+    networks:
+      - crypto-network
+    volumes:
+      - ./producers:/app
+    command: python fear_greed_producer.py
+    restart: unless-stopped
+
+  # ============================================
+  # SPARK STREAMING
+  # ============================================
+  spark-streaming:
+    build:
+      context: ./spark
+      dockerfile: Dockerfile
+    container_name: spark-streaming
+    depends_on:
+      kafka:
+        condition: service_healthy
+      hdfs-init:
+        condition: service_completed_successfully
+    environment:
+      - SPARK_MASTER=local[*]
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - HDFS_URL=hdfs://namenode:9000
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=admin-token-secret-12345
+      - INFLUXDB_ORG=crypto-org
+      - INFLUXDB_BUCKET=crypto-metrics
+    networks:
+      - crypto-network
+    volumes:
+      - ./spark:/app
+    ports:
+      - "4040:4040"
+    restart: unless-stopped
+
+  # ============================================
+  # INFLUXDB - Base de datos de series temporales
+  # ============================================
+  influxdb:
+    image: influxdb:2.7
+    container_name: influxdb
+    ports:
+      - "8086:8086"
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=admin-password
+      - DOCKER_INFLUXDB_INIT_ORG=crypto-org
+      - DOCKER_INFLUXDB_INIT_BUCKET=crypto-metrics
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=admin-token-secret-12345
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+    networks:
+      - crypto-network
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ============================================
+  # PROMETHEUS - Recolección de métricas
+  # ============================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    networks:
+      - crypto-network
+
+  # ============================================
+  # GRAFANA - Visualización
+  # ============================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      #- GF_INSTALL_PLUGINS=influxdb-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - crypto-network
+
+  # ============================================
+  # NODE EXPORTER - Métricas del host
+  # ============================================
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    ports:
+      - "9100:9100"
+    networks:
+      - crypto-network
+
+  # ============================================
+  # CADVISOR - Métricas de contenedores
+  # ============================================
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - crypto-network
+
+networks:
+  crypto-network:
+    driver: bridge
+
+volumes:
+  namenode_data:
+  datanode_data:
+  influxdb_data:
+  prometheus_data:
+  grafana_data:
