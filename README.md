@@ -59,7 +59,7 @@ Pipeline de análisis de criptomonedas en tiempo real usando Apache Kafka, Spark
 ### 1. Clonar el repositorio
 
 ```bash
-git clone <tu-repo>
+git clone https://github.com/CarlosRodri99/crypto-exchange-pipeline.git
 cd crypto-exchange-pipeline
 ```
 
