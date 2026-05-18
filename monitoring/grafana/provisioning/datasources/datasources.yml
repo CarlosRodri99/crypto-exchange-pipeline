@@ -4,6 +4,7 @@ datasources:
   - name: InfluxDB
     type: influxdb
     access: proxy
+    uid: influxdb
     url: http://influxdb:8086
     jsonData:
       version: Flux
@@ -17,6 +18,7 @@ datasources:
   - name: Prometheus
     type: prometheus
     access: proxy
+    uid: prometheus
     url: http://prometheus:9090
     isDefault: true
     editable: true
